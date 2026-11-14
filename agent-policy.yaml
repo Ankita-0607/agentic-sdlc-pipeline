@@ -1,0 +1,52 @@
+# Policy for agents working on THIS repository (the pipeline runs on itself
+# through .github/workflows/agent-pipeline.yml).
+#
+# Reviewed like code: changing what agents may do means changing this file in a
+# pull request. Agents can never edit it, whatever `writable` says.
+version: 1
+
+workspace:
+  # Agents may only change the sample service. The pipeline's own source,
+  # workflows and dependency manifests are off limits.
+  writable:
+    - "examples/sample-service/src/**"
+    - "examples/sample-service/test/**"
+  protected:
+    - ".github/**"
+    - "src/**"
+    - "evals/**"
+    - "**/package.json"
+    - "**/package-lock.json"
+    - "**/agent-policy.yaml"
+  unreadable:
+    - "**/.env*"
+    - "**/*.pem"
+    - "**/*.key"
+
+limits:
+  max_files_changed: 8
+  max_file_bytes: 40000
+  max_diff_lines: 400
+  max_rework_rounds: 2
+  max_turns_per_agent: 30
+
+budget:
+  max_cost_usd: 5
+  max_total_tokens: 2000000
+
+commands:
+  # The only command agents can trigger. They cannot pass arguments to it.
+  test: "npm run test:sample --silent"
+  timeout_seconds: 180
+
+gates:
+  # A named human must approve the plan before any code is written.
+  plan_approval: required
+
+# Least privilege per role: only the implementer can write; the reviewer can
+# read and run tests but cannot change what it reviews.
+roles:
+  spec: [list_files, read_file, search_code]
+  planner: [list_files, read_file, search_code]
+  implementer: [list_files, read_file, search_code, write_file, edit_file, run_tests]
+  reviewer: [list_files, read_file, search_code, run_tests]

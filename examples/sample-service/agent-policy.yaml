@@ -1,0 +1,39 @@
+# Policy used when the pipeline runs against this service on its own (the eval
+# harness copies this directory into a scratch repository for every task).
+version: 1
+
+workspace:
+  writable:
+    - "src/**"
+    - "test/**"
+  protected:
+    - "package.json"
+    - "vitest.config.ts"
+  unreadable:
+    - "**/.env*"
+
+limits:
+  max_files_changed: 8
+  max_file_bytes: 40000
+  max_diff_lines: 400
+  max_rework_rounds: 2
+  max_turns_per_agent: 30
+
+budget:
+  max_cost_usd: 3
+  max_total_tokens: 1500000
+
+commands:
+  test: "npx vitest run"
+  timeout_seconds: 180
+
+gates:
+  # Evals run unattended, so the plan gate is waived here. The policy at the
+  # root of this repository, which governs real runs, sets it to `required`.
+  plan_approval: auto
+
+roles:
+  spec: [list_files, read_file, search_code]
+  planner: [list_files, read_file, search_code]
+  implementer: [list_files, read_file, search_code, write_file, edit_file, run_tests]
+  reviewer: [list_files, read_file, search_code, run_tests]
