@@ -1,0 +1,53 @@
+name: Evals (live)
+
+# Runs the eval tasks against the real model. Manual trigger only: it costs money.
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Run a single task (folder name under evals/tasks). Empty runs all."
+        required: false
+        default: ""
+      model:
+        description: "Model id for every agent role. Empty uses the default in src/config.ts."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ASDLC_MODEL: ${{ inputs.model }}
+          TASK: ${{ inputs.task }}
+        run: |
+          if [ -z "$ASDLC_MODEL" ]; then unset ASDLC_MODEL; fi
+          if [ -n "$TASK" ]; then
+            npm run eval --silent -- --task "$TASK"
+          else
+            npm run eval --silent
+          fi
+      - name: Upload results, reports and audit logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          include-hidden-files: true
+          path: |
+            evals/results/
+            .eval-workspaces/*/.agent-runs/
+          retention-days: 30

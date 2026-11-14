@@ -11,6 +11,6 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "test", "evals/*.ts", "scripts", "examples/sample-service"],
+  "include": ["src", "test", "evals/*.ts", "examples/sample-service"],
   "exclude": ["node_modules", "evals/tasks", ".agent-runs", ".eval-workspaces"]
 }

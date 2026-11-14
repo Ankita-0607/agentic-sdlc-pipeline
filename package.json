@@ -11,8 +11,7 @@
     "test": "vitest run",
     "test:sample": "vitest run --root examples/sample-service",
     "eval": "tsx evals/run.ts",
-    "eval:offline": "tsx evals/run.ts --offline",
-    "demo:offline": "tsx scripts/demo-offline.ts"
+    "eval:offline": "tsx evals/run.ts --offline"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

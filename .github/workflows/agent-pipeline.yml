@@ -1,0 +1,152 @@
+name: Agent pipeline
+
+# The pipeline running on its own repository.
+#
+#   1. A maintainer labels an issue `agent:plan`  -> the agents post a spec and a plan.
+#   2. A maintainer comments `/approve`           -> the agents implement, verify and review.
+#   3. A pull request is opened                   -> a human reviews and merges. Nothing auto-merges.
+#
+# Privilege separation: the `build` job runs code the agents wrote (their
+# tests), so it holds a read-only repository token. A separate `publish` job
+# with write access never executes that code; it re-checks the patch against
+# the policy and pushes it.
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: agent-pipeline-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    # Only people with triage access or higher can label an issue.
+    if: github.event_name == 'issues' && github.event.label.name == 'agent:plan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Write spec and plan, post them on the issue
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: npm run asdlc --silent -- plan --issue "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --post
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plan-run-${{ github.event.issue.number }}
+          include-hidden-files: true
+          path: .agent-runs/
+          retention-days: 30
+
+  build:
+    # `/approve` on an issue (not a pull request), from someone with write access.
+    if: >-
+      github.event_name == 'issue_comment' &&
+      !github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/approve') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      status: ${{ steps.build.outputs.status }}
+      branch: ${{ steps.build.outputs.branch }}
+      title: ${{ steps.build.outputs.title }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Implement, verify and review the approved plan
+        id: build
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          # Untrusted text reaches the shell through the environment, never by interpolation.
+          APPROVER: ${{ github.event.comment.user.login }}
+        run: npm run asdlc --silent -- build --issue "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --approved-by "$APPROVER"
+      - name: Export the commit as a patch
+        if: steps.build.outputs.status == 'ready_for_human_review'
+        env:
+          REPORT_PATH: ${{ steps.build.outputs.report_path }}
+        run: |
+          mkdir -p handoff
+          git format-patch -1 --stdout > handoff/change.patch
+          cp "$REPORT_PATH" handoff/report.md
+      - uses: actions/upload-artifact@v4
+        if: steps.build.outputs.status == 'ready_for_human_review'
+        with:
+          name: handoff
+          path: handoff/
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-run-${{ github.event.issue.number }}
+          include-hidden-files: true
+          path: .agent-runs/
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: needs.build.outputs.status == 'ready_for_human_review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: handoff
+          path: handoff
+      - name: Re-check the patch against the policy before applying it
+        run: npm run asdlc --silent -- policy check-patch handoff/change.patch
+      - name: Push the branch and open a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.build.outputs.branch }}
+          TITLE: ${{ needs.build.outputs.title }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git am handoff/change.patch
+          git push origin "$BRANCH"
+          PR_URL=$(gh pr create --head "$BRANCH" --base "${{ github.event.repository.default_branch }}" \
+            --title "$TITLE" --body-file handoff/report.md)
+          gh issue comment "$ISSUE_NUMBER" --body "The agents implemented the approved plan: $PR_URL
+
+          A human needs to review and merge it."

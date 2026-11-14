@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Type-check
+        run: npm run typecheck
+      - name: Unit and pipeline tests (scripted model, no API key)
+        run: npm test
+      - name: Sample service tests
+        run: npm run test:sample
+      - name: Validate the repository's agent policy
+        run: npm run asdlc --silent -- policy check
+      - name: Offline evals (reference solutions must pass the hidden tests)
+        run: npm run eval:offline

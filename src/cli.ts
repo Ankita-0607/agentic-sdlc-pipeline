@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,7 +18,7 @@ import { AnthropicLlm } from "./llm/client.js";
 import { humanApproval, InteractiveGate } from "./pipeline/gates.js";
 import { buildPhase, createContext, planPhase, runPipeline } from "./pipeline/pipeline.js";
 import { renderPlanMarkdown } from "./pipeline/report.js";
-import { loadPolicy } from "./policy/policy.js";
+import { loadPolicy, PolicyEngine } from "./policy/policy.js";
 import { PlanStateSchema, type Issue, type RunResult } from "./types.js";
 
 const program = new Command()
@@ -120,14 +121,27 @@ program
         });
         log(`Pull request opened: ${prUrl}`);
       }
+      const ready = result.status === "ready_for_human_review";
       if (opts.repo && state.issue.number) {
-        const body =
-          result.status === "ready_for_human_review" && prUrl
-            ? `The agents implemented the approved plan: ${prUrl}\n\nA human needs to review and merge it.`
-            : fs.readFileSync(result.report_path, "utf8");
-        postIssueComment(resolveRepo(opts.repo), state.issue.number, body);
+        if (ready && prUrl) {
+          postIssueComment(
+            resolveRepo(opts.repo),
+            state.issue.number,
+            `The agents implemented the approved plan: ${prUrl}\n\nA human needs to review and merge it.`,
+          );
+        } else if (!ready) {
+          // Tell the humans on the issue why there is no pull request.
+          postIssueComment(resolveRepo(opts.repo), state.issue.number, fs.readFileSync(result.report_path, "utf8"));
+        }
       }
-      setActionOutputs({ status: result.status, run_dir: ctx.runDir, branch: result.branch ?? "", pr_url: prUrl });
+      setActionOutputs({
+        status: result.status,
+        run_dir: ctx.runDir,
+        branch: result.branch ?? "",
+        report_path: result.report_path,
+        title: state.spec.title,
+        pr_url: prUrl,
+      });
       process.stdout.write(fs.readFileSync(result.report_path, "utf8"));
       process.exitCode = exitCode(result);
     },
@@ -176,6 +190,25 @@ policy
         `  plan approval: ${loaded.gates.plan_approval}\n` +
         `  budget: $${loaded.budget.max_cost_usd} / ${loaded.budget.max_total_tokens} tokens\n`,
     );
+  });
+
+policy
+  .command("check-patch <file>")
+  .description("Check the files a patch touches against the policy, without applying it")
+  .option("--dir <path>", "target repository checkout", ".")
+  .action((file: string, opts: { dir: string }) => {
+    const engine = new PolicyEngine(loadPolicy(opts.dir), opts.dir);
+    const numstat = execFileSync("git", ["apply", "--numstat", path.resolve(file)], { cwd: opts.dir, encoding: "utf8" });
+    const rows = numstat.split("\n").filter((line) => line.trim().length > 0).map((line) => line.split("\t"));
+    const changed = rows.map((cols) => ({ path: cols.slice(2).join("\t"), status: "M" }));
+    const lines = rows.reduce((sum, cols) => sum + (Number(cols[0]) || 0) + (Number(cols[1]) || 0), 0);
+    const violations = engine.checkChangeSet(changed, lines);
+    if (violations.length > 0) {
+      process.stdout.write(`Patch violates policy:\n${violations.map((v) => `  - ${v}`).join("\n")}\n`);
+      process.exitCode = 1;
+    } else {
+      process.stdout.write(`Patch is within policy: ${changed.length} files, ${lines} changed lines\n`);
+    }
   });
 
 program.parseAsync().catch((err: unknown) => {
