@@ -17,7 +17,7 @@ a small `LlmClient` interface.
 
 ## Consequences
 
-- The control points are explicit and sit in about 150 lines anyone on the team can read.
+- The control points are explicit and sit in under 200 lines anyone on the team can read.
 - The interface makes the whole pipeline testable with a scripted model: rework loops, gate rejections and budget stops are covered by fast tests with no API key.
 - We own the details a framework would hide: echoing thinking blocks back unchanged, returning all tool results in one message, refusing to run tool calls from a truncated response.
 - If the needs outgrow this (parallel sub-agents, long-running sessions), moving to a managed agent runtime is a contained change behind the same interface.
