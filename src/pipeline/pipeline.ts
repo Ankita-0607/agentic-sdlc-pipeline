@@ -2,13 +2,14 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { AgentError, runAgent, type AgentRuntime, type AgentSpec } from "../agent/loop.js";
-import { runTestCommand } from "../agent/tools.js";
+import { collectTestReport, runTestCommand } from "../agent/tools.js";
 import { implementerAgent, plannerAgent, reviewerAgent, specAgent, type ReworkContext } from "../agents/roles.js";
 import { AuditLog } from "../audit/audit.js";
 import { DEFAULT_MODEL } from "../config.js";
 import type { LlmClient } from "../llm/client.js";
 import { BudgetExceededError, UsageTracker } from "../llm/usage.js";
 import { loadPolicy, PolicyEngine } from "../policy/policy.js";
+import { buildTrace, traceGaps } from "../trace/trace.js";
 import type {
   Approval,
   Issue,
@@ -18,6 +19,8 @@ import type {
   RoundRecord,
   RunResult,
   RunStatus,
+  Spec,
+  TraceabilityResult,
   VerificationResult,
 } from "../types.js";
 import { autoApproval, type ApprovalGate } from "./gates.js";
@@ -133,10 +136,37 @@ export async function planPhase(ctx: PipelineContext, issue: Issue): Promise<Pla
   return state;
 }
 
+/**
+ * Which acceptance criteria have a passing test tagged with their id. Read
+ * from a per-test report the pipeline produces itself, not from the
+ * implementer's criteria_status or the reviewer's criteria_check.
+ */
+async function trace(ctx: PipelineContext, spec: Spec): Promise<TraceabilityResult | undefined> {
+  const config = ctx.policy.policy.traceability;
+  if (!config) return undefined;
+  ctx.log("▸ verification: matching test results to acceptance criteria");
+  const report = await collectTestReport(ctx.policy);
+  const matrix = report.tests ? buildTrace(spec, report.tests) : null;
+  const gaps = matrix ? traceGaps(matrix) : [`the per-test report could not be read: ${report.error}`];
+  const result: TraceabilityResult = { enforce: config.enforce, matrix, gaps, ...(report.error ? { error: report.error } : {}) };
+  ctx.audit.record("traceability", "verify", "pipeline", {
+    enforce: config.enforce,
+    spec_sha256: crypto.createHash("sha256").update(JSON.stringify(spec)).digest("hex"),
+    criteria: matrix?.criteria.map((c) => ({ id: c.id, status: c.status, tests: c.tests.length })) ?? null,
+    unknown_ids: matrix?.unknown_ids ?? [],
+    gaps,
+    error: report.error ?? null,
+  });
+  return result;
+}
+
 /** Tests and policy, checked by the pipeline itself rather than taken from the agent's report. */
-async function verify(ctx: PipelineContext): Promise<VerificationResult> {
+async function verify(ctx: PipelineContext, spec: Spec): Promise<VerificationResult> {
   ctx.log("▸ verification: running tests and re-checking the change set against policy");
   const tests = await runTestCommand(ctx.policy);
+  // Only worth a second test run when the first one passed; a failing suite goes back to the implementer anyway.
+  const traceability = tests.passed ? await trace(ctx, spec) : undefined;
+  const traceBlocks = traceability?.enforce === "required" && traceability.gaps.length > 0;
 
   // Stage after the test run so that files created as a side effect are seen too.
   ctx.workspace.stageAll();
@@ -153,11 +183,12 @@ async function verify(ctx: PipelineContext): Promise<VerificationResult> {
   }
 
   const result: VerificationResult = {
-    passed: tests.passed && violations.length === 0,
+    passed: tests.passed && violations.length === 0 && !traceBlocks,
     tests: { passed: tests.passed, exit_code: tests.exit_code, output_tail: tests.output_tail },
     policy_violations: violations,
     changed_files: changed.map((f) => f.path),
     diff_lines: diffLines,
+    ...(traceability ? { traceability } : {}),
   };
   ctx.audit.record("verification", "verify", "pipeline", {
     passed: result.passed,
@@ -236,12 +267,15 @@ export async function buildPhase(ctx: PipelineContext, state: PlanState, approva
         changed,
       );
 
-      record.verification = await verify(ctx);
+      record.verification = await verify(ctx, state.spec);
       if (!record.verification.passed) {
         status = "failed_verification";
-        detail = record.verification.tests.passed
-          ? record.verification.policy_violations.join("; ")
-          : "The test command failed.";
+        const v = record.verification;
+        detail = !v.tests.passed
+          ? "The test command failed."
+          : v.policy_violations.length > 0
+            ? v.policy_violations.join("; ")
+            : `Traceability: ${(v.traceability?.gaps ?? []).join("; ")}`;
         rework = { round: round + 1, verification: record.verification };
         continue;
       }
@@ -249,7 +283,7 @@ export async function buildPhase(ctx: PipelineContext, state: PlanState, approva
       // The reviewer sees the spec, the plan and the diff; not the implementer's self-report.
       const review = await runStage(
         ctx,
-        reviewerAgent(state.spec, state.plan, ctx.workspace.diff(), ctx.policy),
+        reviewerAgent(state.spec, state.plan, ctx.workspace.diff(), ctx.policy, record.verification.traceability),
         changed,
       );
       record.review = { ...review, decision: effectiveDecision(review) };
@@ -321,6 +355,21 @@ export async function buildPhase(ctx: PipelineContext, state: PlanState, approva
       usage: ctx.usage.total(),
       duration_ms: Date.now() - ctx.startedAt,
     });
+    // The traceability evidence record for this run: which criteria the last
+    // verified change set was shown to satisfy, by which tests, and who approved the plan.
+    const lastTrace = rounds.findLast((r) => r.verification?.traceability)?.verification?.traceability;
+    if (lastTrace) {
+      writeJson(path.join(ctx.runDir, "trace.json"), {
+        run_id: ctx.runId,
+        issue: state.issue.source,
+        spec_sha256: crypto.createHash("sha256").update(JSON.stringify(state.spec)).digest("hex"),
+        base_commit: state.base_commit,
+        commit: commit ?? null,
+        status,
+        plan_approved_by: approval.kind === "human" ? approval.approver : "policy (auto)",
+        ...lastTrace,
+      });
+    }
     ctx.log(`■ ${status}: ${detail}`);
     return { ...result, report_path: reportPath };
   }

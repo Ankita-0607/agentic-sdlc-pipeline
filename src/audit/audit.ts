@@ -35,6 +35,7 @@ export type AuditEventType =
   | "agent_submit"
   | "approval"
   | "verification"
+  | "traceability"
   | "budget_exceeded"
   | "run_completed"
   | "error";

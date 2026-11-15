@@ -19,6 +19,7 @@ import { humanApproval, InteractiveGate } from "./pipeline/gates.js";
 import { buildPhase, createContext, planPhase, runPipeline } from "./pipeline/pipeline.js";
 import { renderPlanMarkdown } from "./pipeline/report.js";
 import { loadPolicy, PolicyEngine } from "./policy/policy.js";
+import { buildTrace, parseTestReport, renderTraceMarkdown, traceGaps } from "./trace/trace.js";
 import { PlanStateSchema, type Issue, type RunResult } from "./types.js";
 
 const program = new Command()
@@ -176,6 +177,25 @@ audit
     }
   });
 
+program
+  .command("trace")
+  .description("Match a Jest/Vitest JSON test report to the acceptance criteria of a spec. Calls no model.")
+  .requiredOption("--state <file>", "state.json written by `asdlc plan` (the approved spec)")
+  .requiredOption("--report <file>", "JSON test report, e.g. from `vitest run --reporter=json --outputFile=report.json`")
+  .option("--dir <path>", "repository checkout, used to shorten test file paths", ".")
+  .option("--strict", "exit with status 1 when a criterion has no passing tagged test", false)
+  .action((opts: { state: string; report: string; dir: string; strict: boolean }) => {
+    const state = PlanStateSchema.parse(JSON.parse(fs.readFileSync(opts.state, "utf8")));
+    const tests = parseTestReport(JSON.parse(fs.readFileSync(opts.report, "utf8")), fs.realpathSync(path.resolve(opts.dir)));
+    const matrix = buildTrace(state.spec, tests);
+    const gaps = traceGaps(matrix);
+    process.stdout.write(`## Traceability: ${state.spec.title}\n\n${renderTraceMarkdown(matrix)}\n`);
+    if (gaps.length > 0) {
+      process.stdout.write(`\nGaps:\n${gaps.map((g) => `- ${g}`).join("\n")}\n`);
+      if (opts.strict) process.exitCode = 1;
+    }
+  });
+
 const policy = program.command("policy").description("Work with the repository policy");
 policy
   .command("check")
@@ -188,6 +208,7 @@ policy
         `  writable:  ${loaded.workspace.writable.join(", ")}\n` +
         `  protected: ${loaded.workspace.protected.join(", ") || "(none)"}\n` +
         `  plan approval: ${loaded.gates.plan_approval}\n` +
+        `  traceability: ${loaded.traceability ? loaded.traceability.enforce : "off"}\n` +
         `  budget: $${loaded.budget.max_cost_usd} / ${loaded.budget.max_total_tokens} tokens\n`,
     );
   });

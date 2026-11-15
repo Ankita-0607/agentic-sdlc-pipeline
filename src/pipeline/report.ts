@@ -1,5 +1,6 @@
 import type { AuditLog } from "../audit/audit.js";
 import type { UsageTracker } from "../llm/usage.js";
+import { describeCriterion, renderTraceMarkdown } from "../trace/trace.js";
 import { ROLES, type Approval, type PlanState, type RunResult } from "../types.js";
 
 /** The plan as shown to the human approver (terminal prompt or GitHub issue comment). */
@@ -89,13 +90,39 @@ export function renderReport(input: ReportInput): string {
     lines.push("## Acceptance criteria", "");
     const lastRound = result.rounds.at(-1);
     const reviewed = new Map((lastRound?.review?.criteria_check ?? []).map((c) => [c.id, c]));
-    lines.push("| Id | Criterion | Reviewer agent |", "|---|---|---|");
+    // The most recent round the pipeline traced; a later round that failed its tests has no trace.
+    const traceability = result.rounds.findLast((r) => r.verification?.traceability)?.verification?.traceability;
+    const traced = new Map((traceability?.matrix?.criteria ?? []).map((c) => [c.id, c]));
+    const header = traceability
+      ? ["| Id | Criterion | Tests (run by the pipeline) | Reviewer agent |", "|---|---|---|---|"]
+      : ["| Id | Criterion | Reviewer agent |", "|---|---|---|"];
+    lines.push(...header);
     for (const c of state.spec.acceptance_criteria) {
       const check = reviewed.get(c.id);
       const verdict = check ? (check.met ? "met" : "**not met**") : "not reviewed";
-      lines.push(`| ${c.id} | ${c.text.replace(/\|/g, "\\|")} | ${verdict} |`);
+      const criterion = traced.get(c.id);
+      const tests = traceability ? ` ${criterion ? describeCriterion(criterion) : "no report"} |` : "";
+      lines.push(`| ${c.id} | ${c.text.replace(/\|/g, "\\|")} |${tests} ${verdict} |`);
     }
     lines.push("");
+
+    if (traceability) {
+      lines.push("## Traceability", "");
+      lines.push(
+        "Tests are matched to criteria by the `[AC…]` tag in the test name, from a test run the pipeline made itself. " +
+          "A tag shows that a test claims a criterion and passed; it does not show that the test checks it well.",
+        "",
+      );
+      if (traceability.matrix) lines.push(renderTraceMarkdown(traceability.matrix), "");
+      if (traceability.error) lines.push(`The per-test report could not be read: ${traceability.error}`, "");
+      if (traceability.gaps.length > 0 && traceability.matrix) {
+        lines.push(
+          traceability.enforce === "required" ? "Gaps (blocking under this policy):" : "Gaps (reported only under this policy):",
+          ...traceability.gaps.map((g) => `- ${g}`),
+          "",
+        );
+      }
+    }
   }
 
   if (result.rounds.length > 0) {

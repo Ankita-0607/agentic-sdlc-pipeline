@@ -32,6 +32,10 @@ gates:
   # root of this repository, which governs real runs, sets it to `required`.
   plan_approval: auto
 
+traceability:
+  report_command: "npx vitest run --reporter=json --outputFile={report}"
+  enforce: report
+
 roles:
   spec: [list_files, read_file, search_code]
   planner: [list_files, read_file, search_code]

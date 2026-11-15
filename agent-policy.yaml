@@ -43,6 +43,14 @@ gates:
   # A named human must approve the plan before any code is written.
   plan_approval: required
 
+# After the tests pass, the pipeline runs this itself and matches test names
+# tagged like "[AC1]" to the spec's acceptance criteria. Agents cannot trigger
+# it. `report` shows the matrix in the run report; `required` also sends a
+# change back when a criterion has no passing tagged test.
+traceability:
+  report_command: "npx vitest run --root examples/sample-service --reporter=json --outputFile={report}"
+  enforce: report
+
 # Least privilege per role: only the implementer can write; the reviewer can
 # read and run tests but cannot change what it reviews.
 roles:
