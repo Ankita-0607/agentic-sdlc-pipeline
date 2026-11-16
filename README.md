@@ -217,7 +217,7 @@ _No live run has been recorded in this repository yet._
 - **TypeScript, Node.js.** Claude through the official [`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk), with adaptive thinking, prompt caching and streaming.
 - **A hand-written agent loop** ([`src/agent/loop.ts`](src/agent/loop.ts), under 200 lines) rather than a framework, because the governance hooks live between turns: budget check before each model call, policy check and audit record around each tool call.
 - **Structured hand-offs.** Each stage ends with a `submit_*` tool call validated against a Zod schema ([`src/types.ts`](src/types.ts)), so stages exchange typed artifacts, not prose.
-- **The model behind an interface** ([`src/llm/client.ts`](src/llm/client.ts)). Tests and offline evals plug in a scripted implementation, which is how more than 80 tests cover gates, rework loops and failure paths without an API key.
+- **The model behind an interface** ([`src/llm/client.ts`](src/llm/client.ts)). Tests and offline evals plug in a scripted implementation, which is how more than 100 tests cover gates, rework loops and failure paths without an API key.
 
 ```
 src/
