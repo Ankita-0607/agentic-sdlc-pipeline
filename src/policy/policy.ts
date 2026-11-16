@@ -65,6 +65,32 @@ export const PolicySchema = z.object({
     .default({ extra_patterns: [] }),
   /** Optional model override per role. Defaults come from src/config.ts. */
   models: z.record(z.enum(ROLES), z.string()).optional(),
+  /**
+   * Optional criterion-to-test traceability. When present, verification also
+   * runs `report_command` and matches test names tagged like "[AC1]" to the
+   * spec's acceptance criteria.
+   */
+  traceability: z
+    .object({
+      /**
+       * A command that runs the tests and writes a Jest-format JSON report
+       * (Vitest `--reporter=json`, Jest `--json`) to the path that replaces
+       * `{report}`. Only the pipeline runs it; agents cannot trigger it.
+       */
+      report_command: z
+        .string()
+        .min(1)
+        .refine((command) => command.includes("{report}"), {
+          message: "must contain the {report} placeholder for the report file path",
+        }),
+      /**
+       * `report`: show the matrix in the run report. `required`: a criterion
+       * without a passing tagged test fails verification and goes back to the
+       * implementer.
+       */
+      enforce: z.enum(["report", "required"]).default("report"),
+    })
+    .optional(),
 });
 export type Policy = z.infer<typeof PolicySchema>;
 

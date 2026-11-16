@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import type { AuditLog } from "../audit/audit.js";
 import type { PolicyEngine, ToolName } from "../policy/policy.js";
+import { parseTestReport, type TestOutcome } from "../trace/trace.js";
 import type { Role, Stage } from "../types.js";
 
 /**
@@ -253,11 +255,16 @@ const ENV_ALLOWLIST = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP"
  * everything else in the parent environment are not passed down.
  */
 export function runTestCommand(policy: PolicyEngine): Promise<TestRun> {
+  return runPolicyCommand(policy, policy.policy.commands.test);
+}
+
+/** Run a command string taken from the reviewed policy file, in the scrubbed environment. */
+function runPolicyCommand(policy: PolicyEngine, test: string): Promise<TestRun> {
   const env: NodeJS.ProcessEnv = { CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" };
   for (const key of ENV_ALLOWLIST) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
-  const { test, timeout_seconds } = policy.policy.commands;
+  const { timeout_seconds } = policy.policy.commands;
 
   return new Promise((resolve) => {
     // `shell: true` is acceptable here because the command string comes from
@@ -302,6 +309,43 @@ export function runTestCommand(policy: PolicyEngine): Promise<TestRun> {
     });
     child.on("close", finish);
   });
+}
+
+export interface TestReportRun {
+  /** Per-test outcomes, or null when the report could not be produced or read. */
+  tests: TestOutcome[] | null;
+  error?: string;
+}
+
+/**
+ * Run the policy's `traceability.report_command` and read the per-test report
+ * it writes. Only the pipeline calls this; it is not an agent tool.
+ *
+ * The report goes to a fresh directory outside the workspace, so it never
+ * shows up in the change set and a file left in the repository cannot stand in
+ * for it. The command still runs agent-written test code, so the limits in
+ * docs/governance.md apply: this is not a sandbox.
+ */
+export async function collectTestReport(policy: PolicyEngine): Promise<TestReportRun> {
+  const command = policy.policy.traceability?.report_command;
+  if (!command) return { tests: null, error: "no traceability.report_command in the policy" };
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "asdlc-report-"));
+  const reportFile = path.join(dir, "report.json");
+  try {
+    const run = await runPolicyCommand(policy, command.replaceAll("{report}", `"${reportFile}"`));
+    if (run.timed_out) return { tests: null, error: "the report command timed out" };
+    if (!fs.existsSync(reportFile)) {
+      return { tests: null, error: `the report command wrote no report (exit code ${run.exit_code})` };
+    }
+    try {
+      return { tests: parseTestReport(JSON.parse(fs.readFileSync(reportFile, "utf8")), policy.root) };
+    } catch (err) {
+      return { tests: null, error: `unreadable test report: ${(err as Error).message.slice(0, 300)}` };
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export const runTests: AgentTool = {

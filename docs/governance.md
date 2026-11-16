@@ -34,6 +34,7 @@ teams has to answer, and where its controls stop.
 | How much may it spend? | `budget.max_cost_usd` and `budget.max_total_tokens`, checked before every model call |
 | How do we know what it did? | `audit.jsonl` per run; `asdlc audit verify` checks the hash chain |
 | How do we know it is good enough? | `npm run eval`: success rate and escaped defects on tasks with hidden tests |
+| Which tests show each requirement was met? | `traceability` in `agent-policy.yaml`: a criterion-to-test matrix built by the pipeline from its own test run, saved as `trace.json` per run |
 | Who is accountable for a merged change? | The human who approved the plan (recorded in the commit trailer and audit log) and the human who merged the pull request |
 
 ## Threat model
@@ -48,6 +49,7 @@ key, and the organisation's trust in what gets merged.
 | Agent-written tests run hostile code | Scrubbed environment for the test process; read-only token and `persist-credentials: false` in the job that runs it; a separate job publishes. | **Not sandboxed.** The test process runs as the same user as the pipeline and has network access. A hostile test could read the parent process's environment (including the model API key) or call out to the network. For repositories where issue authors are not trusted, run the test command in a container with no network and a separate user. |
 | Forged approval or forged plan on GitHub | `/approve` is honoured only from accounts with write access (`author_association`). The build job only trusts plan state from comments written by the workflow's own bot account. | Anyone with write access can approve; that is the same trust as merging. |
 | Tampering with the patch between the build and publish jobs | The publish job re-checks the patch's file list and size against the policy before applying it. A human reviews the pull request. | The re-check covers paths and size, not content. |
+| Agent claims a criterion is met with no test behind it | The pipeline matches tests tagged with criterion ids to its own per-test results; `enforce: required` blocks a criterion with no passing tagged test. | The tag is the agent's claim. A tagged test can pass without really checking the criterion, and agent-written test code runs in the process that writes the report, so a hostile test could falsify it. The reviewer agent, the human reviewer and the hidden-test evals are the controls for that. |
 | Secrets committed by an agent | Pattern scan on every write and on the final change set. | Pattern-based: it catches common credential formats, not every secret. |
 | Audit log edited after the fact | Hash chain; verification reports the first broken event. | The chain proves integrity, not completeness of what was logged, and whoever holds the log can truncate its tail. Ship logs to append-only storage for stronger guarantees. |
 | Cost overrun | Budget checked before each call; turn and rework limits. | A single very large response can overshoot the budget by one call. |

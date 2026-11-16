@@ -11,8 +11,10 @@ import {
   type Plan,
   type Review,
   type Spec,
+  type TraceabilityResult,
   type VerificationResult,
 } from "../types.js";
+import { renderTraceMarkdown } from "../trace/trace.js";
 
 /**
  * The four agent roles. Each prompt explains the role's place in the pipeline
@@ -107,7 +109,18 @@ export function implementerAgent(
     if (v.policy_violations.length > 0) {
       feedback.push(`The change set violates repository policy:\n- ${v.policy_violations.join("\n- ")}`);
     }
+    if (v.traceability?.enforce === "required" && v.traceability.gaps.length > 0) {
+      feedback.push(
+        `The pipeline could not trace every acceptance criterion to a passing test:\n- ${v.traceability.gaps.join("\n- ")}`,
+      );
+    }
   }
+  const traceability = policy.policy.traceability;
+  const tagging = traceability
+    ? `
+
+Tag each test with the acceptance criterion it proves by putting the id in square brackets in the test name, for example it("[AC1] excludes time on hold", ...). A test that proves two criteria carries both: "[AC1, AC2]". After the tests pass, the pipeline reads the per-test results itself and matches them to the spec; a criterion with no passing tagged test is reported to the human reviewer as untested${traceability.enforce === "required" ? ", and the change is sent back to you" : ""}. Tag a test only when it would fail if that criterion were not met, because the tag is the evidence the reviewer relies on.`
+    : "";
   if (rework?.review && rework.review.decision === "request_changes") {
     feedback.push(`The reviewer requested changes:\n${json(rework.review)}`);
   }
@@ -124,7 +137,7 @@ export function implementerAgent(
 
 Your role: implementer. A human has approved the plan below; carry it out.
 
-Stay within the approved plan. The approval covers that plan, not a broader one, so if you find the plan is wrong or incomplete, make the smallest deviation that works and explain it in the notes field. Follow the conventions of the surrounding code. Write or update tests for every acceptance criterion, and run the test suite with run_tests before you submit: the pipeline runs the same command afterwards and will send the work back if it fails.
+Stay within the approved plan. The approval covers that plan, not a broader one, so if you find the plan is wrong or incomplete, make the smallest deviation that works and explain it in the notes field. Follow the conventions of the surrounding code. Write or update tests for every acceptance criterion, and run the test suite with run_tests before you submit: the pipeline runs the same command afterwards and will send the work back if it fails.${tagging}
 
 The repository policy for this run:
 ${describePolicy(policy)}
@@ -140,7 +153,16 @@ Report honestly. In criteria_status, mark a criterion not_met if you could not s
   };
 }
 
-export function reviewerAgent(spec: Spec, plan: Plan, diff: string, policy: PolicyEngine): AgentSpec<Review> {
+export function reviewerAgent(
+  spec: Spec,
+  plan: Plan,
+  diff: string,
+  policy: PolicyEngine,
+  traceability?: TraceabilityResult,
+): AgentSpec<Review> {
+  const traceBlock = traceability?.matrix
+    ? `<test_trace>\n${renderTraceMarkdown(traceability.matrix)}\n</test_trace>\n\nThe test trace above was produced by the pipeline from its own test run: it shows which tests are tagged with each acceptance criterion and whether they passed. It does not show that a tagged test really checks its criterion; that is for you to judge from the diff.\n\n`
+    : "";
   return {
     role: "reviewer",
     stage: "review",
@@ -151,7 +173,7 @@ Your role: independent code reviewer. You did not write this change and you have
 Check each acceptance criterion against the code and its tests, and record the result in criteria_check. Look for correctness bugs, unhandled edge cases, tests that would pass even if the behaviour were wrong, changes outside the approved plan, and anything a maintainer would object to. Read the surrounding files when the diff alone is not enough, and run the tests yourself if you doubt them.
 
 Use severity to say what must happen: "blocking" and "major" findings mean the change should not go to a human reviewer yet; "minor" and "nit" are suggestions. Decide request_changes only when there is at least one blocking or major finding, and make each finding specific enough to act on. Approve when the change meets the spec, even if you would have written it differently. A human still reviews the pull request after you.`,
-    task: `<spec>\n${json(spec)}\n</spec>\n\n<approved_plan>\n${json(plan)}\n</approved_plan>\n\n<diff>\n${diff}\n</diff>\n\nReview the change and submit your verdict with submit_review.`,
+    task: `<spec>\n${json(spec)}\n</spec>\n\n<approved_plan>\n${json(plan)}\n</approved_plan>\n\n<diff>\n${diff}\n</diff>\n\n${traceBlock}Review the change and submit your verdict with submit_review.`,
     tools: toolsForRole("reviewer", policy),
     submit: {
       name: "submit_review",

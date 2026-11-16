@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { TraceMatrix } from "./trace/trace.js";
 
 /**
  * The artifacts that flow between pipeline stages. Each one is produced by an
@@ -131,6 +132,17 @@ export interface VerificationResult {
   policy_violations: string[];
   changed_files: string[];
   diff_lines: number;
+  /** Present when the policy has a `traceability` section. */
+  traceability?: TraceabilityResult;
+}
+
+export interface TraceabilityResult {
+  enforce: "report" | "required";
+  /** Null when the per-test report could not be produced; `error` says why. */
+  matrix: TraceMatrix | null;
+  /** Criteria without a passing tagged test, failing tagged tests, and tags that match no criterion. */
+  gaps: string[];
+  error?: string;
 }
 
 export interface RunResult {

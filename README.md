@@ -58,6 +58,7 @@ afternoon:
 | One agent does everything, unchecked | Least-privilege tool grants per role: only the implementer can write, the reviewer can read and run tests | `roles:` in [`agent-policy.yaml`](agent-policy.yaml) |
 | Agents build the wrong thing | A human approves the spec and plan first. The gate can only be waived in the reviewed policy file, never by a command-line flag | [`src/pipeline/pipeline.ts`](src/pipeline/pipeline.ts) |
 | Agent claims "tests pass" when they do not | The pipeline runs the tests itself and re-checks the real change set from git | `verify()` in [`src/pipeline/pipeline.ts`](src/pipeline/pipeline.ts) |
+| "Criterion met" rests on an agent's say-so | After the tests pass, the pipeline reads per-test results itself and matches tests tagged `[AC1]` to the spec's criteria. An untested criterion is shown to the human reviewer, or blocks the change when the policy says `required` | [`src/trace/trace.ts`](src/trace/trace.ts) |
 | Implementer marks its own homework | A separate reviewer agent sees the spec and the diff, not the implementer's self-report. An approval with a blocking finding attached is treated as a rejection | [`src/pipeline/pipeline.ts`](src/pipeline/pipeline.ts) |
 | Runaway loops and cost | Turn limit per agent, rework-round limit, and a token and dollar budget checked before every model call | [`src/llm/usage.ts`](src/llm/usage.ts) |
 | "What did the agents actually do?" | Hash-chained JSONL audit log; `asdlc audit verify` detects edits and deletions | [`src/audit/audit.ts`](src/audit/audit.ts) |
@@ -106,6 +107,48 @@ roles:
 
 Changing what agents may do means changing this file in a pull request, with
 the same review as any other change.
+
+## Traceability: criteria to tests
+
+The spec agent gives every acceptance criterion an id. With a `traceability`
+section in the policy, the implementer is told to put that id in the name of
+each test that proves it:
+
+```ts
+it("[AC1] excludes time on hold from turnaround", () => { ... });
+```
+
+After the tests pass, the pipeline runs the suite once more with a JSON
+reporter and builds the matrix itself. No model is involved in this step.
+
+```yaml
+traceability:
+  report_command: "npx vitest run --reporter=json --outputFile={report}"
+  enforce: report        # or `required`: no passing tagged test, no review
+```
+
+| Status | Meaning |
+|---|---|
+| verified | At least one test tagged with the id passed, and none failed |
+| failing | A test tagged with the id failed |
+| untested | No test tagged with the id ran (skipped tests do not count) |
+
+The matrix appears in the run report next to the reviewer agent's own verdict,
+is given to the reviewer agent as input, is recorded in the audit log, and is
+saved as `.agent-runs/<run id>/trace.json` with the spec hash, the commit and
+the name of the person who approved the plan.
+
+The same check works on any spec and any Jest-format report, without running
+the agents:
+
+```bash
+npx vitest run --reporter=json --outputFile=report.json
+npm run asdlc -- trace --state .agent-runs/<run id>/state.json --report report.json --strict
+```
+
+A tag shows that a test claims a criterion and passed. It does not show that
+the test checks the criterion well; the reviewer agent and the human reviewer
+remain the controls for that. See [ADR 004](docs/adr/004-criterion-traceability.md).
 
 ## Try it
 
@@ -174,7 +217,7 @@ _No live run has been recorded in this repository yet._
 - **TypeScript, Node.js.** Claude through the official [`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk), with adaptive thinking, prompt caching and streaming.
 - **A hand-written agent loop** ([`src/agent/loop.ts`](src/agent/loop.ts), under 200 lines) rather than a framework, because the governance hooks live between turns: budget check before each model call, policy check and audit record around each tool call.
 - **Structured hand-offs.** Each stage ends with a `submit_*` tool call validated against a Zod schema ([`src/types.ts`](src/types.ts)), so stages exchange typed artifacts, not prose.
-- **The model behind an interface** ([`src/llm/client.ts`](src/llm/client.ts)). Tests and offline evals plug in a scripted implementation, which is how more than 80 tests cover gates, rework loops and failure paths without an API key.
+- **The model behind an interface** ([`src/llm/client.ts`](src/llm/client.ts)). Tests and offline evals plug in a scripted implementation, which is how more than 100 tests cover gates, rework loops and failure paths without an API key.
 
 ```
 src/
@@ -183,9 +226,10 @@ src/
   agent/      the agent loop and the tools agents can call
   agents/     the four roles and their prompts
   pipeline/   orchestrator, approval gates, git workspace, run report
+  trace/      criterion-to-test traceability matrix
   llm/        Claude client, usage and cost tracking, scripted test double
   github.ts   issues, comments and pull requests through the gh CLI
-  cli.ts      asdlc plan | build | run | audit verify | policy check
+  cli.ts      asdlc plan | build | run | trace | audit verify | policy check
 evals/        eval tasks, harness and results
 examples/     the sample service the agents work on, and example issues
 docs/         governance notes and decision records
